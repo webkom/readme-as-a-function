@@ -12,7 +12,7 @@ RUN mkdir /TMP
 RUN curl -sL https://github.com/openfaas/faas/releases/download/0.9.0/fwatchdog > /usr/bin/fwatchdog \
     && chmod +x /usr/bin/fwatchdog
 
-FROM scratch
+FROM busybox
 COPY --from=build-env /go/src/app/main .
 COPY --from=build-env /usr/bin/fwatchdog .
 COPY --from=build-env /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
