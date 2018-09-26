@@ -149,7 +149,7 @@ func Handle(req []byte) string {
 		Variables     map[string]interface{} `json:"variables"`
 	}
 	if err := json.Unmarshal(req, &params); err != nil {
-		return "RIP"
+		return "This is a graphql api. Please post some data, or inspect the api via https://lucasconstantino.github.io/graphiql-online/ with this url as endpoint"
 	}
 	s := graphql.MustParseSchema(schema, &query{})
 	ctx, _ := context.WithTimeout(context.Background(), 8*time.Second)
