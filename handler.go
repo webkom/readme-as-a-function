@@ -21,7 +21,7 @@ schema {
 		query: Query
 }
 type Query {
-	readmeUtgaver(year: Int utgave: Int): [ReadmeUtgave!]!
+	readmeUtgaver(year: Int utgave: Int first: Int): [ReadmeUtgave!]!
 	latestReadme: ReadmeUtgave
 }
 type ReadmeUtgave {
@@ -70,6 +70,7 @@ func (q *query) LatestReadme(ctx context.Context) *ReadmeUtgave {
 func (q *query) ReadmeUtgaver(ctx context.Context, input *struct {
 	Year   *int32
 	Utgave *int32
+	First  *int32
 }) []ReadmeUtgave {
 	readmes := getSortedReadmes()
 	if input == nil {
@@ -84,6 +85,9 @@ func (q *query) ReadmeUtgaver(ctx context.Context, input *struct {
 			continue
 		}
 		filteredReadmes = append(filteredReadmes, r)
+		if input.First != nil && len(filteredReadmes) == int(*input.First) {
+			break
+		}
 	}
 
 	return filteredReadmes
