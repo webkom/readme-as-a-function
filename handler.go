@@ -18,10 +18,19 @@ type query struct{}
 
 const schema = `
 schema {
-		query: Query
+	query: Query
 }
 type Query {
-	readmeUtgaver(year: Int utgave: Int first: Int): [ReadmeUtgave!]!
+	# Get a list of readmes
+	readmeUtgaver(
+		# Filter by year
+		year: Int
+		# filter by issue number, 1 to 6
+		utgave: Int
+		# Get the first _n_ issues/utgaver
+		first: Int
+	): [ReadmeUtgave!]!
+	# Get the latest readme
 	latestReadme: ReadmeUtgave
 }
 type ReadmeUtgave {
