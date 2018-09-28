@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"sort"
@@ -13,8 +14,6 @@ import (
 	graphql "github.com/graph-gophers/graphql-go"
 	"time"
 )
-
-type query struct{}
 
 const schema = `
 schema {
@@ -44,6 +43,11 @@ type ReadmeUtgave {
 `
 const url = "https://readme.abakus.no/"
 
+type resolver struct {
+	readmes []ReadmeUtgave
+	err     error
+}
+
 // ReadmeUtgave is a cool struct
 type ReadmeUtgave struct {
 	Title  string
@@ -53,40 +57,54 @@ type ReadmeUtgave struct {
 	Utgave int32
 }
 
+// TITLE returns the title of the readme
 func (r ReadmeUtgave) TITLE() string {
 	return r.Title
 }
+
+// PDF returns the complete url of the pdf
 func (r ReadmeUtgave) PDF() string {
 	return url + r.Pdf
 }
+
+// IMAGE returns the complete url of the image
 func (r ReadmeUtgave) IMAGE() string {
 	return url + r.Image
 }
+
+// YEAR returns the year
 func (r ReadmeUtgave) YEAR() int32 {
 	return r.Year
 }
+
+// UTGAVE returns the "utgave" nr
 func (r ReadmeUtgave) UTGAVE() int32 {
 	return r.Utgave
 }
-func (q *query) LatestReadme(ctx context.Context) *ReadmeUtgave {
-	rs := getSortedReadmes()
-	if len(rs) == 0 {
-		return nil
+
+func (r *resolver) LatestReadme() (*ReadmeUtgave, error) {
+	if r.err != nil {
+		return nil, r.err
 	}
-	return &rs[0]
+	if len(r.readmes) == 0 {
+		return nil, nil
+	}
+	return &r.readmes[0], nil
 }
 
-func (q *query) ReadmeUtgaver(ctx context.Context, input *struct {
+func (r *resolver) ReadmeUtgaver(input *struct {
 	Year   *int32
 	Utgave *int32
 	First  *int32
-}) []ReadmeUtgave {
-	readmes := getSortedReadmes()
-	if input == nil {
-		return readmes
+}) ([]ReadmeUtgave, error) {
+	if r.err != nil {
+		return nil, r.err
 	}
-	filteredReadmes := readmes[:0]
-	for _, r := range readmes {
+	if input == nil {
+		return r.readmes, nil
+	}
+	filteredReadmes := make([]ReadmeUtgave, 0)
+	for _, r := range r.readmes {
 		if input.Year != nil && *input.Year != r.Year {
 			continue
 		}
@@ -99,22 +117,19 @@ func (q *query) ReadmeUtgaver(ctx context.Context, input *struct {
 		}
 	}
 
-	return filteredReadmes
+	return filteredReadmes, nil
+}
+func sortReadmes(utgaver *[]ReadmeUtgave) {
+	sort.Slice(*utgaver, func(i, j int) bool {
+		if (*utgaver)[i].Year == (*utgaver)[j].Year {
+			return (*utgaver)[i].Utgave > (*utgaver)[j].Utgave
+		}
+		return (*utgaver)[i].Year > (*utgaver)[j].Year
+	})
 }
 
-func getSortedReadmes() []ReadmeUtgave {
-	// Request the HTML page.
-	res, err := http.Get(url)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
-	}
-
-	// Load the HTML document
-	doc, err := goquery.NewDocumentFromReader(res.Body)
+func getSortedReadmes(data io.Reader) []ReadmeUtgave {
+	doc, err := goquery.NewDocumentFromReader(data)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -138,12 +153,8 @@ func getSortedReadmes() []ReadmeUtgave {
 		}
 		utgaver = append(utgaver, utgave)
 	})
-	sort.Slice(utgaver, func(i, j int) bool {
-		if utgaver[i].Year == utgaver[j].Year {
-			return utgaver[i].Utgave > utgaver[j].Utgave
-		}
-		return utgaver[i].Year > utgaver[j].Year
-	})
+
+	sortReadmes(&utgaver)
 
 	return utgaver
 }
@@ -154,7 +165,7 @@ var params struct {
 	Variables     map[string]interface{} `json:"variables"`
 }
 
-var page = `
+var graphiql = `
 <!DOCTYPE html>
 <html>
 	<head>
@@ -168,8 +179,8 @@ var page = `
 		<div id="graphiql" style="height: 100vh;">Loading...</div>
 		<script>
 			function graphQLFetcher(graphQLParams) {
-				return fetch("/graphql", {
-					method: "post",
+				return fetch("/", {
+					method: "POST",
 					body: JSON.stringify(graphQLParams),
 					credentials: "include",
 				}).then(function (response) {
@@ -192,6 +203,23 @@ var page = `
 </html>
 `
 
+const cancelTimeout = 8 * time.Second
+
+func fetchReadmes(ctx context.Context, url string) (io.ReadCloser, error) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	client := http.DefaultClient
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	return res.Body, err
+
+}
+
 // Handle a serverless request
 func Handle(req []byte) string {
 	var params struct {
@@ -200,10 +228,23 @@ func Handle(req []byte) string {
 		Variables     map[string]interface{} `json:"variables"`
 	}
 	if err := json.Unmarshal(req, &params); err != nil {
-		return page
+		return graphiql
 	}
-	s := graphql.MustParseSchema(schema, &query{})
-	ctx, _ := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), cancelTimeout)
+	defer cancel()
+
+	var readmes []ReadmeUtgave
+	dataReader, err := fetchReadmes(ctx, url)
+	defer dataReader.Close()
+	if err == nil {
+		readmes = getSortedReadmes(dataReader)
+	}
+	r := resolver{
+		err:     err,
+		readmes: readmes,
+	}
+
+	s := graphql.MustParseSchema(schema, &r)
 	response := s.Exec(ctx, params.Query, params.OperationName, params.Variables)
 	responseJSON, _ := json.Marshal(response)
 
