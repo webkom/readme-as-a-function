@@ -5,7 +5,7 @@ WORKDIR /go/src/app
 COPY Gopkg.toml Gopkg.lock ./
 RUN go get -v -u github.com/golang/dep/... && dep ensure -vendor-only
 ADD . ./
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main main.go handler.go
 
 RUN mkdir /TMP
 
