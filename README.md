@@ -8,10 +8,10 @@ Running on https://readme-as-a-function.abakus.no
 
 ## To run locally
 
-```
+```bash
 $ dep ensure
 $ # Simple usage
-$ go run main.go handler.go <<<  '{"query":"query($first: Int){ readmeUtgaver(first: $first){ pdf utgave title }}","variables":{"first": 2}}' | jq
+$ go run main.go handler.go <<<  '{"query":"{latestReadme{ title }}"}' | jq
 $ # As webserver at http://localhost:8000
 $ go run demo-webserver.go handle.go
 
@@ -47,6 +47,6 @@ type ReadmeUtgave {
 
 ### Testing
 
-```
+```bash
 $ go test
 ```

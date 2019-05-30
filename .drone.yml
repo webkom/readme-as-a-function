@@ -9,7 +9,7 @@ pipeline:
       # TODO fix this hack
       - go get -v -u github.com/PuerkitoBio/goquery
       - go get -v -u github.com/graph-gophers/graphql-go
-      - go test hander_test.go handler.go
+      - go test hander_test.go handler.go -v
   build:
     image: golang
     group: test
@@ -29,7 +29,7 @@ pipeline:
     registry: https://registry.abakus.no
     repo: registry.abakus.no/webkom/readme-as-a-function
     dockerfile: Dockerfile
-    secrets: [ docker_username, docker_password ]
+    secrets: [docker_username, docker_password]
     tags:
       - ${DRONE_BRANCH}-${DRONE_COMMIT_SHA:0:7}
       - latest
