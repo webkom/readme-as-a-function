@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -92,27 +93,30 @@ func (r *resolver) LatestReadme() (*ReadmeUtgave, error) {
 	return &r.readmes[0], nil
 }
 
-func (r *resolver) ReadmeUtgaver(input *struct {
+// ReadmeUtgaveFilter is the filter
+type ReadmeUtgaveFilter struct {
 	Year   *int32
 	Utgave *int32
 	First  *int32
-}) ([]ReadmeUtgave, error) {
+}
+
+func (r *resolver) ReadmeUtgaver(filter *ReadmeUtgaveFilter) ([]ReadmeUtgave, error) {
 	if r.err != nil {
 		return nil, r.err
 	}
-	if input == nil {
+	if filter == nil {
 		return r.readmes, nil
 	}
-	filteredReadmes := make([]ReadmeUtgave, 0)
+	var filteredReadmes []ReadmeUtgave
 	for _, r := range r.readmes {
-		if input.Year != nil && *input.Year != r.Year {
+		if filter.Year != nil && *filter.Year != r.Year {
 			continue
 		}
-		if input.Utgave != nil && *input.Utgave != r.Utgave {
+		if filter.Utgave != nil && *filter.Utgave != r.Utgave {
 			continue
 		}
 		filteredReadmes = append(filteredReadmes, r)
-		if input.First != nil && len(filteredReadmes) == int(*input.First) {
+		if filter.First != nil && len(filteredReadmes) == int(*filter.First) {
 			break
 		}
 	}
@@ -128,10 +132,12 @@ func sortReadmes(utgaver *[]ReadmeUtgave) {
 	})
 }
 
-func getSortedReadmes(data io.Reader) []ReadmeUtgave {
+var parserNoElementsError = errors.New("unknown parsing error. No elements found")
+
+func parseReadmes(data io.Reader) ([]ReadmeUtgave, error) {
 	doc, err := goquery.NewDocumentFromReader(data)
 	if err != nil {
-		log.Fatal(err)
+		return []ReadmeUtgave{}, err
 	}
 
 	utgaver := []ReadmeUtgave{}
@@ -153,10 +159,11 @@ func getSortedReadmes(data io.Reader) []ReadmeUtgave {
 		}
 		utgaver = append(utgaver, utgave)
 	})
+	if len(utgaver) == 0 {
+		return []ReadmeUtgave{}, parserNoElementsError
+	}
 
-	sortReadmes(&utgaver)
-
-	return utgaver
+	return utgaver, nil
 }
 
 var params struct {
@@ -227,26 +234,40 @@ func Handle(req []byte) string {
 		OperationName string                 `json:"operationName"`
 		Variables     map[string]interface{} `json:"variables"`
 	}
-	if err := json.Unmarshal(req, &params); err != nil {
+	var readmes []ReadmeUtgave
+	// If the request is empty / GET
+	if len(req) == 0 {
 		return graphiql
 	}
+
+	var err error
+	err = json.Unmarshal(req, &params)
+
 	ctx, cancel := context.WithTimeout(context.Background(), cancelTimeout)
 	defer cancel()
-
-	var readmes []ReadmeUtgave
-	dataReader, err := fetchReadmes(ctx, url)
-	defer dataReader.Close()
 	if err == nil {
-		readmes = getSortedReadmes(dataReader)
+
+		var dataReader io.ReadCloser
+		dataReader, err = fetchReadmes(ctx, url)
+
+		if err == nil {
+			readmes, err = parseReadmes(dataReader)
+			defer dataReader.Close()
+		}
+		sortReadmes(&readmes)
+
 	}
 	r := resolver{
 		err:     err,
 		readmes: readmes,
 	}
-
 	s := graphql.MustParseSchema(schema, &r)
 	response := s.Exec(ctx, params.Query, params.OperationName, params.Variables)
 	responseJSON, _ := json.Marshal(response)
+
+	if err != nil {
+		log.Printf("Unexpected error occured %e\n", err)
+	}
 
 	return string(responseJSON)
 
