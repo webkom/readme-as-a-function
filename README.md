@@ -11,9 +11,9 @@ Running on https://readme-as-a-function.abakus.no
 ```bash
 $ dep ensure
 $ # Simple usage
-$ go run main.go handler.go <<<  '{"query":"{latestReadme{ title }}"}' | jq
+$ go run main.go <<<  '{"query":"{latestReadme{ title }}"}' | jq
 $ # As webserver at http://localhost:8000
-$ go run demo-webserver.go handle.go
+$ go run pkg/webserver/main.go
 
 ```
 

@@ -2,25 +2,24 @@
 pipeline:
   setup:
     image: golang
-    group: test
     when:
       event: [push]
     commands:
-      - go get -v
+      - go get -v ./...
   test:
     image: golang
     group: test
     when:
       event: [push]
     commands:
-      - go test main.go handler.go
+      - go test ./...
   build:
     image: golang
     group: test
     when:
       event: [push]
     commands:
-      - go build main.go handler.go
+      - go build .
   docker:
     image: plugins/docker
     when:
