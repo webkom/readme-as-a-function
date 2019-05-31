@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/webkom/readme-as-a-function/pkg/handler"
 	"io/ioutil"
 	"log"
 	"os"
@@ -13,5 +14,5 @@ func main() {
 		log.Fatalf("Unable to read standard input: %s", err.Error())
 	}
 
-	fmt.Println(Handle(input))
+	fmt.Println(handler.Handle(input))
 }
