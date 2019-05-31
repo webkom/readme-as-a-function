@@ -169,9 +169,39 @@ func TestLatestReadme(t *testing.T) {
 }
 
 func TestBadInput(t *testing.T) {
-	if res := Handle([]byte("")); res != graphiql {
-		t.Errorf("Expected graphiql on bad input, got %+v\n", res)
-
+	testCases := []struct {
+		name string
+		in   string
+		out  string
+	}{
+		{
+			name: "Empty request body / GET",
+			in:   "",
+			out:  graphiql,
+		},
+		{
+			name: "Invalid syntax inside query",
+			in:   `{"query": "{latestReadme{{}}}"}`,
+			out:  `{"errors":[{"message":"syntax error: unexpected \"{\", expecting Ident","locations":[{"line":1,"column":15}]}]}`,
+		},
+		{
+			name: "valid but empty json, no results",
+			in:   `{"query": "{}"}`,
+			out:  `{"data":{}}`,
+		},
+		{
+			name: "missing query operation",
+			in:   "{}",
+			out:  `{"errors":[{"message":"no operations in query document"}]}`,
+		},
+	}
+	for _, c := range testCases {
+		t.Run(c.name, func(t *testing.T) {
+			res := Handle([]byte(c.in))
+			if res != c.out {
+				t.Errorf("Expected %s, got %s\n", c.out, res)
+			}
+		})
 	}
 
 }
