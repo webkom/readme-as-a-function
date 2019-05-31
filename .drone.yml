@@ -1,23 +1,25 @@
 ---
 pipeline:
+  setup:
+    image: golang
+    group: test
+    when:
+      event: [push]
+    commands:
+      - go get -v
   test:
     image: golang
     group: test
     when:
       event: [push]
     commands:
-      # TODO fix this hack
-      - go get -v -u github.com/PuerkitoBio/goquery
-      - go get -v -u github.com/graph-gophers/graphql-go
-      - go test hander_test.go handler.go -v
+      - go test main.go handler.go
   build:
     image: golang
     group: test
     when:
       event: [push]
     commands:
-      - go get -v -u github.com/PuerkitoBio/goquery
-      - go get -v -u github.com/graph-gophers/graphql-go
       - go build main.go handler.go
   docker:
     image: plugins/docker
