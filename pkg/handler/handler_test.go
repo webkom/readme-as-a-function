@@ -54,10 +54,10 @@ func TestRealParsing(t *testing.T) {
 
 type StubErrorReader struct{}
 
-var StubErrorReaderError = errors.New("Wrong")
+var ErrStubReader = errors.New("Wrong")
 
 func (StubErrorReader) Read(p []byte) (n int, err error) {
-	return 0, StubErrorReaderError
+	return 0, ErrStubReader
 }
 
 func TestParsing(t *testing.T) {
@@ -81,7 +81,7 @@ func TestParsing(t *testing.T) {
 		{
 			name:     "Bad reader",
 			input:    StubErrorReader{},
-			err:      StubErrorReaderError,
+			err:      ErrStubReader,
 			outCount: 0,
 		},
 		{
@@ -150,7 +150,7 @@ func TestLatestReadme(t *testing.T) {
 	r = resolver{readmes: []ReadmeUtgave{}}
 	first, err = r.LatestReadme()
 	if first != nil {
-		t.Errorf("Expected no first readme beacuse of empty arr, got %+v\n", first)
+		t.Errorf("Expected no first readme because of empty arr, got %+v\n", first)
 	}
 	if err != nil {
 		t.Errorf("Expected no error %e, got \n", err)

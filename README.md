@@ -1,5 +1,7 @@
 # readme-as-a-function
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/webkom/readme-as-a-function)](https://goreportcard.com/report/github.com/webkom/readme-as-a-function)
+
 Graphql api as a function, runs in [openfaas](https://www.openfaas.com/).
 
 Allows you to fetch the `n` last readmes from https://readme.abakus.no. Also possible to filter based on year and issue number.
