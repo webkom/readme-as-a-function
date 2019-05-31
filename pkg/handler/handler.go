@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -46,7 +46,6 @@ const url = "https://readme.abakus.no/"
 
 type resolver struct {
 	readmes []ReadmeUtgave
-	err     error
 }
 
 // ReadmeUtgave is a cool struct
@@ -84,9 +83,6 @@ func (r ReadmeUtgave) UTGAVE() int32 {
 }
 
 func (r *resolver) LatestReadme() (*ReadmeUtgave, error) {
-	if r.err != nil {
-		return nil, r.err
-	}
 	if len(r.readmes) == 0 {
 		return nil, nil
 	}
@@ -101,9 +97,6 @@ type ReadmeUtgaveFilter struct {
 }
 
 func (r *resolver) ReadmeUtgaver(filter *ReadmeUtgaveFilter) ([]ReadmeUtgave, error) {
-	if r.err != nil {
-		return nil, r.err
-	}
 	if filter == nil {
 		return r.readmes, nil
 	}
@@ -132,7 +125,7 @@ func sortReadmes(utgaver *[]ReadmeUtgave) {
 	})
 }
 
-var parserNoElementsError = errors.New("unknown parsing error. No elements found")
+var errParserNoElements = errors.New("unknown parsing error. No elements found")
 
 func parseReadmes(data io.Reader) ([]ReadmeUtgave, error) {
 	doc, err := goquery.NewDocumentFromReader(data)
@@ -160,7 +153,7 @@ func parseReadmes(data io.Reader) ([]ReadmeUtgave, error) {
 		utgaver = append(utgaver, utgave)
 	})
 	if len(utgaver) == 0 {
-		return []ReadmeUtgave{}, parserNoElementsError
+		return []ReadmeUtgave{}, errParserNoElements
 	}
 
 	return utgaver, nil
@@ -242,39 +235,37 @@ func Handle(req []byte) string {
 
 	var err error
 	err = json.Unmarshal(req, &params)
+	if err != nil {
+		return renderError(err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), cancelTimeout)
 	defer cancel()
-	if err == nil {
+	var dataReader io.ReadCloser
+	dataReader, err = fetchReadmes(ctx, url)
+	if err != nil {
+		return renderError(err)
+	}
 
-		var dataReader io.ReadCloser
-		dataReader, err = fetchReadmes(ctx, url)
+	readmes, err = parseReadmes(dataReader)
+	defer dataReader.Close()
 
-		if err == nil {
-			readmes, err = parseReadmes(dataReader)
-			defer dataReader.Close()
-		}
-		sortReadmes(&readmes)
-
+	if err != nil {
+		return renderError(err)
 	}
 	r := resolver{
-		err:     err,
 		readmes: readmes,
 	}
 	s := graphql.MustParseSchema(schema, &r)
 	response := s.Exec(ctx, params.Query, params.OperationName, params.Variables)
 	responseJSON, _ := json.Marshal(response)
 
-	if err != nil {
-		log.Printf("Unexpected error occured %e\n", err)
-	}
-
 	return string(responseJSON)
 
 }
 
-//func main() {
-//	input := `
-//	{"query":"{\n  readmeUtgaver{\n    title\n    year\n    image\n    pdf\n  }\n}","variables":null,"operationName":null}`
-//	fmt.Println(Handle([]byte(input)))
-//}
+func renderError(err error) string {
+	// TODO fix printng
+	// log.Printf("Unexpected error occured %e\n", err)
+	return fmt.Sprintf(`{"errors":[{"message":"%s"}]}`, err.Error())
+}

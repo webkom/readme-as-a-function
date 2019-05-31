@@ -71,7 +71,7 @@ func TestParsing(t *testing.T) {
 			name:     "Valid html but no results",
 			input:    strings.NewReader("<html></html>"),
 			outCount: 0,
-			err:      parserNoElementsError,
+			err:      errParserNoElements,
 		},
 		{
 			name:     "Normal parsing",
@@ -138,7 +138,7 @@ func TestLatestReadme(t *testing.T) {
 			Title: "Two",
 		},
 	}
-	r := resolver{readmes: rs, err: nil}
+	r := resolver{readmes: rs}
 	first, err := r.LatestReadme()
 	if err != nil {
 		t.Errorf("Got error %e\n", err)
@@ -147,23 +147,13 @@ func TestLatestReadme(t *testing.T) {
 		t.Errorf("Expected %+v as first readme, got %+v\n", rs[0], first)
 	}
 
-	r = resolver{readmes: rs, err: errors.New("Err")}
-	first, err = r.LatestReadme()
-	if first != nil {
-		t.Errorf("Expected no first readme because of error, got %+v\n", first)
-	}
-	if err == nil {
-		t.Errorf("Expected error %e, got none\n", r.err)
-
-	}
-
-	r = resolver{readmes: []ReadmeUtgave{}, err: nil}
+	r = resolver{readmes: []ReadmeUtgave{}}
 	first, err = r.LatestReadme()
 	if first != nil {
 		t.Errorf("Expected no first readme beacuse of empty arr, got %+v\n", first)
 	}
 	if err != nil {
-		t.Errorf("Expected no error %e, got \n", r.err)
+		t.Errorf("Expected no error %e, got \n", err)
 	}
 
 }
