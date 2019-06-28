@@ -246,13 +246,13 @@ func Handle(req []byte) string {
 	if err != nil {
 		return renderError(err)
 	}
-
-	readmes, err = parseReadmes(dataReader)
 	defer dataReader.Close()
 
+	readmes, err = parseReadmes(dataReader)
 	if err != nil {
 		return renderError(err)
 	}
+	sortReadmes(&readmes)
 	r := resolver{
 		readmes: readmes,
 	}
