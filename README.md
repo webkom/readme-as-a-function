@@ -50,5 +50,5 @@ type ReadmeUtgave {
 ### Testing
 
 ```bash
-$ go test
+$ go test -v ./...
 ```
