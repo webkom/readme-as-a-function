@@ -3,17 +3,17 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"regexp"
+	"log"
 
-	"github.com/PuerkitoBio/goquery"
 	graphql "github.com/graph-gophers/graphql-go"
 	"time"
+	"cloud.google.com/go/storage"
+	"google.golang.org/api/iterator"
 )
 
 const schema = `
@@ -42,10 +42,10 @@ type ReadmeUtgave {
 }
 
 `
-const url = "https://readme.abakus.no/"
 
 type resolver struct {
-	readmes []ReadmeUtgave
+	client storage.Client
+	ctx context.Context
 }
 
 // ReadmeUtgave is a cool struct
@@ -64,12 +64,12 @@ func (r ReadmeUtgave) TITLE() string {
 
 // PDF returns the complete url of the pdf
 func (r ReadmeUtgave) PDF() string {
-	return url + r.Pdf
+	return strings.ReplaceAll(r.Pdf, "%", "%%")
 }
 
 // IMAGE returns the complete url of the image
 func (r ReadmeUtgave) IMAGE() string {
-	return url + r.Image
+	return strings.ReplaceAll(r.Image, "%", "%%")
 }
 
 // YEAR returns the year
@@ -83,10 +83,12 @@ func (r ReadmeUtgave) UTGAVE() int32 {
 }
 
 func (r *resolver) LatestReadme() (*ReadmeUtgave, error) {
-	if len(r.readmes) == 0 {
+	readmes, err := getReadmes(r.ctx, r.client, "")
+	sortReadmes(&readmes)
+	if len(readmes) == 0 {
 		return nil, nil
 	}
-	return &r.readmes[0], nil
+	return &readmes[0], err
 }
 
 // ReadmeUtgaveFilter is the filter
@@ -96,26 +98,78 @@ type ReadmeUtgaveFilter struct {
 	First  *int32
 }
 
-func (r *resolver) ReadmeUtgaver(filter *ReadmeUtgaveFilter) ([]ReadmeUtgave, error) {
-	if filter == nil {
-		return r.readmes, nil
-	}
-	var filteredReadmes []ReadmeUtgave
-	for _, r := range r.readmes {
-		if filter.Year != nil && *filter.Year != r.Year {
-			continue
-		}
-		if filter.Utgave != nil && *filter.Utgave != r.Utgave {
-			continue
-		}
-		filteredReadmes = append(filteredReadmes, r)
-		if filter.First != nil && len(filteredReadmes) == int(*filter.First) {
+func getReadmes(ctx context.Context, client storage.Client, query string) ([]ReadmeUtgave, error) {
+	pdfQuery := &storage.Query{Prefix: "pdf/" + query}
+	imageQuery := &storage.Query{Prefix: "images/" + query}
+
+	re := regexp.MustCompile(`(?P<Year>\d{4})-(?P<Utgave>\d{2})`)
+
+	bkt := client.Bucket("readme-arkiv.appspot.com")
+	pdfIt := bkt.Objects(ctx, pdfQuery)
+	imageIt := bkt.Objects(ctx, imageQuery)
+	var err error
+	var readmes  []ReadmeUtgave
+	for {
+		pdfAttrs, err := pdfIt.Next()
+		if err == iterator.Done {
 			break
 		}
+		imageAttrs, err := imageIt.Next()
+
+		if err == iterator.Done {
+			break
+		}
+
+		// Object may be a directory
+		match := re.FindAllString(pdfAttrs.Name, -1)
+		if len(match) == 0 {
+			continue
+		}
+
+		matches := re.FindStringSubmatch(pdfAttrs.Name)
+		utgave, _ := strconv.ParseInt(matches[2], 10, 32)
+		year, _ := strconv.ParseInt(matches[1], 10, 32)
+		title := re.FindAllString(pdfAttrs.Name, 1)[0]
+
+		r := ReadmeUtgave{
+			Title: title,
+			Image: imageAttrs.MediaLink,
+			Pdf: pdfAttrs.MediaLink,
+			Year: int32(year),
+			Utgave: int32(utgave),
+		}
+		readmes = append(readmes, r)
+	}
+	if err == iterator.Done {
+		err = nil
+	}
+	return readmes, err
+}
+
+func (r *resolver) ReadmeUtgaver(filter *ReadmeUtgaveFilter) ([]ReadmeUtgave, error) {
+	if filter == nil {
+		return getReadmes(r.ctx, r.client, "")
+	}
+	var query string
+	var readmes []ReadmeUtgave
+	var err error
+	if filter.Year != nil {
+		query = fmt.Sprintf("%d/", *filter.Year)
+		readmes, err = getReadmes(r.ctx, r.client, query)
+	} else {
+		readmes, err = getReadmes(r.ctx, r.client, "")
+	}
+	if filter.Utgave != nil {
+		readmes = filterReadmes(readmes, filter)
+	}
+	sortReadmes(&readmes)
+	if filter.First != nil {
+		return readmes[:*filter.First], err
 	}
 
-	return filteredReadmes, nil
+	return readmes, err
 }
+
 func sortReadmes(utgaver *[]ReadmeUtgave) {
 	sort.Slice(*utgaver, func(i, j int) bool {
 		if (*utgaver)[i].Year == (*utgaver)[j].Year {
@@ -125,39 +179,21 @@ func sortReadmes(utgaver *[]ReadmeUtgave) {
 	})
 }
 
-var errParserNoElements = errors.New("unknown parsing error. No elements found")
-
-func parseReadmes(data io.Reader) ([]ReadmeUtgave, error) {
-	doc, err := goquery.NewDocumentFromReader(data)
-	if err != nil {
-		return []ReadmeUtgave{}, err
-	}
-
-	utgaver := []ReadmeUtgave{}
-	// Find the review items
-	doc.Find(".col-xs-6").Each(func(i int, s *goquery.Selection) {
-		title, _ := s.Find("img").Attr("alt")
-		image, _ := s.Find("img").Attr("src")
-		pdf, _ := s.Find("a").Attr("href")
-		splitted := strings.Split(title, " ")
-		year, _ := strconv.Atoi(splitted[len(splitted)-1])
-		utgaveNr, _ := strconv.Atoi(splitted[len(splitted)-2])
-
-		utgave := ReadmeUtgave{
-			Year:   int32(year),
-			Title:  title,
-			Pdf:    pdf,
-			Image:  image,
-			Utgave: int32(utgaveNr),
+func filterReadmes(utgaver []ReadmeUtgave, filter *ReadmeUtgaveFilter) []ReadmeUtgave {
+	var res []ReadmeUtgave
+	for _, utgave := range utgaver {
+		if filter.Utgave != nil && *filter.Utgave != utgave.Utgave {
+			continue
 		}
-		utgaver = append(utgaver, utgave)
-	})
-	if len(utgaver) == 0 {
-		return []ReadmeUtgave{}, errParserNoElements
-	}
+		if filter.Year != nil && *filter.Year != utgave.Year {
+			continue
+		}
 
-	return utgaver, nil
+		res = append(res, utgave)
+	}
+	return res
 }
+
 
 var params struct {
 	Query         string                 `json:"query"`
@@ -205,20 +241,6 @@ var graphiql = `
 
 const cancelTimeout = 8 * time.Second
 
-func fetchReadmes(ctx context.Context, url string) (io.ReadCloser, error) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	client := http.DefaultClient
-	res, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	return res.Body, err
-
-}
 
 // Handle a serverless request
 func Handle(req []byte) string {
@@ -227,7 +249,7 @@ func Handle(req []byte) string {
 		OperationName string                 `json:"operationName"`
 		Variables     map[string]interface{} `json:"variables"`
 	}
-	var readmes []ReadmeUtgave
+
 	// If the request is empty / GET
 	if len(req) == 0 {
 		return graphiql
@@ -240,22 +262,19 @@ func Handle(req []byte) string {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), cancelTimeout)
-	defer cancel()
-	var dataReader io.ReadCloser
-	dataReader, err = fetchReadmes(ctx, url)
-	if err != nil {
-		return renderError(err)
-	}
-	defer dataReader.Close()
 
-	readmes, err = parseReadmes(dataReader)
+	defer cancel()
+
+	client, err := storage.NewClient(ctx)
 	if err != nil {
-		return renderError(err)
+		log.Fatalf(err.Error())
 	}
-	sortReadmes(&readmes)
+
 	r := resolver{
-		readmes: readmes,
+		*client,
+		ctx,
 	}
+
 	s := graphql.MustParseSchema(schema, &r)
 	response := s.Exec(ctx, params.Query, params.OperationName, params.Variables)
 	responseJSON, _ := json.Marshal(response)
