@@ -11,7 +11,6 @@ Running on https://readme-as-a-function.abakus.no
 ## To run locally
 
 ```bash
-$ dep ensure
 $ # Simple usage
 $ go run main.go <<<  '{"query":"{latestReadme{ title }}"}' | jq
 $ # As webserver at http://localhost:8000
