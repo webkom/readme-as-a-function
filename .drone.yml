@@ -12,7 +12,7 @@ pipeline:
     when:
       event: [push]
     commands:
-      - go test ./...
+      - go test -v ./...
   build:
     image: golang
     group: test
