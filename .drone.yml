@@ -1,38 +1,53 @@
 ---
-pipeline:
-  setup:
+kind: pipeline
+type: docker
+name: default
+
+steps:
+  - name: setup
     image: golang
     when:
       event: [push]
     commands:
       - go get -v ./...
-  test:
+
+  - name: test
     image: golang
-    group: test
+    depends_on:
+      - setup
     when:
       event: [push]
     commands:
       - go test -v ./...
-  build:
+
+  - name: build
     image: golang
-    group: test
+    depends_on:
+      - setup
     when:
       event: [push]
     commands:
       - go build .
-  docker:
+
+  - name: docker
     image: plugins/docker
     when:
       branch:
         - prod
       event: push
       status: success
-    registry: https://registry.abakus.no
-    repo: registry.abakus.no/webkom/readme-as-a-function
-    dockerfile: Dockerfile
-    secrets: [docker_username, docker_password]
-    tags:
-      - ${DRONE_BRANCH}-${DRONE_COMMIT_SHA:0:7}
-      - latest
-    build_args:
-      - RELEASE=${DRONE_BRANCH}-${DRONE_COMMIT_SHA:0:7}
+    depends_on:
+      - test
+      - build
+    settings:
+      registry: https://registry.abakus.no
+      repo: registry.abakus.no/webkom/readme-as-a-function
+      username:
+        from_secret: docker_username
+      password:
+        from_secret: docker_password
+      tags:
+        - ${DRONE_BRANCH}-${DRONE_COMMIT_SHA:0:7}
+        - latest
+      build_args:
+        - RELEASE=${DRONE_BRANCH}-${DRONE_COMMIT_SHA:0:7}
