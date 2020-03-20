@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
 	"regexp"
 	"log"
 
 	graphql "github.com/graph-gophers/graphql-go"
 	"time"
 	"cloud.google.com/go/storage"
+	"google.golang.org/api/option"
 	"google.golang.org/api/iterator"
 )
 
@@ -43,6 +43,8 @@ type ReadmeUtgave {
 
 `
 
+const bucketName = "readme-arkiv.appspot.com"
+
 type resolver struct {
 	client storage.Client
 	ctx context.Context
@@ -64,12 +66,12 @@ func (r ReadmeUtgave) TITLE() string {
 
 // PDF returns the complete url of the pdf
 func (r ReadmeUtgave) PDF() string {
-	return strings.ReplaceAll(r.Pdf, "%", "%%")
+	return r.Pdf
 }
 
 // IMAGE returns the complete url of the image
 func (r ReadmeUtgave) IMAGE() string {
-	return strings.ReplaceAll(r.Image, "%", "%%")
+	return r.Image
 }
 
 // YEAR returns the year
@@ -98,13 +100,17 @@ type ReadmeUtgaveFilter struct {
 	First  *int32
 }
 
+func getLink(name string) string {
+	return fmt.Sprintf("https://storage.googleapis.com/%v/%v", bucketName, name)
+}
+
 func getReadmes(ctx context.Context, client storage.Client, query string) ([]ReadmeUtgave, error) {
 	pdfQuery := &storage.Query{Prefix: "pdf/" + query}
 	imageQuery := &storage.Query{Prefix: "images/" + query}
 
 	re := regexp.MustCompile(`(?P<Year>\d{4})-(?P<Utgave>\d{2})`)
 
-	bkt := client.Bucket("readme-arkiv.appspot.com")
+	bkt := client.Bucket(bucketName)
 	pdfIt := bkt.Objects(ctx, pdfQuery)
 	imageIt := bkt.Objects(ctx, imageQuery)
 	var err error
@@ -133,8 +139,8 @@ func getReadmes(ctx context.Context, client storage.Client, query string) ([]Rea
 
 		r := ReadmeUtgave{
 			Title: title,
-			Image: imageAttrs.MediaLink,
-			Pdf: pdfAttrs.MediaLink,
+			Image: getLink(imageAttrs.Name),
+			Pdf: getLink(pdfAttrs.Name),
 			Year: int32(year),
 			Utgave: int32(utgave),
 		}
@@ -265,7 +271,7 @@ func Handle(req []byte) string {
 
 	defer cancel()
 
-	client, err := storage.NewClient(ctx)
+	client, err := storage.NewClient(ctx, option.WithoutAuthentication())
 	if err != nil {
 		log.Fatalf(err.Error())
 	}
