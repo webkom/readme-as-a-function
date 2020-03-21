@@ -4,16 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
-	"regexp"
-	"log"
 
-	graphql "github.com/graph-gophers/graphql-go"
-	"time"
 	"cloud.google.com/go/storage"
-	"google.golang.org/api/option"
+	graphql "github.com/graph-gophers/graphql-go"
 	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
+	"time"
 )
 
 const schema = `
@@ -47,7 +46,7 @@ const bucketName = "readme-arkiv.appspot.com"
 
 type resolver struct {
 	client storage.Client
-	ctx context.Context
+	ctx    context.Context
 }
 
 // ReadmeUtgave is a cool struct
@@ -101,60 +100,73 @@ type ReadmeUtgaveFilter struct {
 }
 
 func getLink(name string) string {
-	return fmt.Sprintf("https://storage.googleapis.com/%v/%v", bucketName, name)
+	return fmt.Sprintf("https://storage.googleapis.com/%s/%s", bucketName, name)
 }
 
-func getReadmes(ctx context.Context, client storage.Client, query string) ([]ReadmeUtgave, error) {
-	pdfQuery := &storage.Query{Prefix: "pdf/" + query}
-	imageQuery := &storage.Query{Prefix: "images/" + query}
-
+func getRegexMatches(name string) []string {
 	re := regexp.MustCompile(`(?P<Year>\d{4})-(?P<Utgave>\d{2})`)
+
+	if !re.MatchString(name) {
+		return nil
+	}
+	return re.FindStringSubmatch(name)[1:]
+}
+
+// getReadmes fetches readmes from the storage bucket via a storage.Client.
+// query is optional for filtering objects via object prefix (path).
+// ex. "2018" fiters for all objects with a path beginning with "2018"
+func getReadmes(ctx context.Context, client storage.Client, query string) ([]ReadmeUtgave, error) {
+	pdfQuery := &storage.Query{Prefix: fmt.Sprintf("pdf/%s", query)}
+	imageQuery := &storage.Query{Prefix: fmt.Sprintf("images/%s", query)}
 
 	bkt := client.Bucket(bucketName)
 	pdfIt := bkt.Objects(ctx, pdfQuery)
 	imageIt := bkt.Objects(ctx, imageQuery)
 	var err error
-	var readmes  []ReadmeUtgave
+	var readmes []ReadmeUtgave
 	for {
-		pdfAttrs, err := pdfIt.Next()
-		if err == iterator.Done {
+		pdfAttrs, errr := pdfIt.Next()
+		if errr == iterator.Done {
 			break
 		}
-		imageAttrs, err := imageIt.Next()
+		imageAttrs, errr := imageIt.Next()
 
-		if err == iterator.Done {
+		if errr == iterator.Done {
 			break
 		}
 
 		// Object may be a directory
-		match := re.FindAllString(pdfAttrs.Name, -1)
-		if len(match) == 0 {
+		matches := getRegexMatches(pdfAttrs.Name)
+		if matches == nil {
 			continue
 		}
 
-		matches := re.FindStringSubmatch(pdfAttrs.Name)
-		utgave, _ := strconv.ParseInt(matches[2], 10, 32)
-		year, _ := strconv.ParseInt(matches[1], 10, 32)
-		title := re.FindAllString(pdfAttrs.Name, 1)[0]
+		year, errr := strconv.ParseInt(matches[0], 10, 32)
+		utgave, errr := strconv.ParseInt(matches[1], 10, 32)
+		title := fmt.Sprintf("readme utgave nr. %d %d", utgave, year)
+
+		err = errr
+		if err != nil {
+			break
+		}
 
 		r := ReadmeUtgave{
-			Title: title,
-			Image: getLink(imageAttrs.Name),
-			Pdf: getLink(pdfAttrs.Name),
-			Year: int32(year),
+			Title:  title,
+			Image:  getLink(imageAttrs.Name),
+			Pdf:    getLink(pdfAttrs.Name),
+			Year:   int32(year),
 			Utgave: int32(utgave),
 		}
 		readmes = append(readmes, r)
-	}
-	if err == iterator.Done {
-		err = nil
 	}
 	return readmes, err
 }
 
 func (r *resolver) ReadmeUtgaver(filter *ReadmeUtgaveFilter) ([]ReadmeUtgave, error) {
 	if filter == nil {
-		return getReadmes(r.ctx, r.client, "")
+		readmes, err := getReadmes(r.ctx, r.client, "")
+		sortReadmes(&readmes)
+		return readmes, err
 	}
 	var query string
 	var readmes []ReadmeUtgave
@@ -169,7 +181,7 @@ func (r *resolver) ReadmeUtgaver(filter *ReadmeUtgaveFilter) ([]ReadmeUtgave, er
 		readmes = filterReadmes(readmes, filter)
 	}
 	sortReadmes(&readmes)
-	if filter.First != nil {
+	if filter.First != nil && *filter.First < int32(len(readmes)) {
 		return readmes[:*filter.First], err
 	}
 
@@ -199,7 +211,6 @@ func filterReadmes(utgaver []ReadmeUtgave, filter *ReadmeUtgaveFilter) []ReadmeU
 	}
 	return res
 }
-
 
 var params struct {
 	Query         string                 `json:"query"`
@@ -247,7 +258,6 @@ var graphiql = `
 
 const cancelTimeout = 8 * time.Second
 
-
 // Handle a serverless request
 func Handle(req []byte) string {
 	var params struct {
@@ -273,12 +283,12 @@ func Handle(req []byte) string {
 
 	client, err := storage.NewClient(ctx, option.WithoutAuthentication())
 	if err != nil {
-		log.Fatalf(err.Error())
+		renderError(err)
 	}
 
 	r := resolver{
-		*client,
-		ctx,
+		client: *client,
+		ctx:    ctx,
 	}
 
 	s := graphql.MustParseSchema(schema, &r)

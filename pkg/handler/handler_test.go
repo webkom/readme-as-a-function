@@ -1,14 +1,15 @@
 package handler
 
 import (
+	"cloud.google.com/go/storage"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
+	"google.golang.org/api/option"
 	"reflect"
 	"testing"
-	"cloud.google.com/go/storage"
-	"google.golang.org/api/option"
 )
 
 var offline = flag.Bool("offline", false, "Offline test - does not fetch remote data")
@@ -38,6 +39,60 @@ var ErrStubReader = errors.New("Wrong")
 
 func (StubErrorReader) Read(p []byte) (n int, err error) {
 	return 0, ErrStubReader
+}
+
+func TestRegex(t *testing.T) {
+	testCases := []struct {
+		name    string
+		matches []string
+	}{
+		{
+			name:    "2019-03.pdf",
+			matches: []string{"2019", "03"},
+		},
+		{
+			name:    "2009-01.jpg",
+			matches: []string{"2009", "01"},
+		},
+		{
+			name:    "2009-01.pdf",
+			matches: []string{"2009", "01"},
+		},
+		{
+			name:    "2020-01.pdf",
+			matches: []string{"2020", "01"},
+		},
+		{
+			name:    "1993-02.pdf",
+			matches: []string{"1993", "02"},
+		},
+		{
+			name:    "utgave-1993-02.pdf",
+			matches: []string{"1993", "02"},
+		},
+		{
+			name:    "2019-1.pdf",
+			matches: nil,
+		},
+		{
+			name:    "02-2019.pdf",
+			matches: nil,
+		},
+		{
+			name:    "2019_03.txt",
+			matches: nil,
+		},
+	}
+
+	for _, c := range testCases {
+		t.Run(c.name, func(t *testing.T) {
+			res := getRegexMatches(c.name)
+			if !reflect.DeepEqual(res, c.matches) {
+				t.Errorf("Expected %s, got %s\n", c.matches, res)
+			}
+		})
+	}
+
 }
 
 func TestGetReadmes(t *testing.T) {
@@ -86,7 +141,7 @@ func TestReadmeUtgaveResolvers(t *testing.T) {
 	}
 }
 
-func TestLatestReadmeOnline(t *testing.T){
+func TestLatestReadmeOnline(t *testing.T) {
 	if offline == nil || *offline {
 		t.Skip()
 	}
@@ -98,8 +153,8 @@ func TestLatestReadmeOnline(t *testing.T){
 	}
 
 	r := resolver{
-		*client,
-		ctx,
+		client: *client,
+		ctx:    ctx,
 	}
 
 	first, err := r.LatestReadme()
@@ -111,15 +166,14 @@ func TestLatestReadmeOnline(t *testing.T){
 	}
 }
 
-// We create a new function that can take test data so that test data is consistent
-func LatestReadme(readmes []ReadmeUtgave) (*ReadmeUtgave, error) {
+// LatestReadme is a utility function to test without google cloud apis.
+func latestReadme(readmes []ReadmeUtgave) (*ReadmeUtgave, error) {
 	sortReadmes(&readmes)
 	if len(readmes) == 0 {
 		return nil, nil
 	}
 	return &readmes[0], nil
 }
-
 
 func TestLatestReadme(t *testing.T) {
 	rs := []ReadmeUtgave{
@@ -131,7 +185,7 @@ func TestLatestReadme(t *testing.T) {
 		},
 	}
 
-	first, err := LatestReadme(rs)
+	first, err := latestReadme(rs)
 	if err != nil {
 		t.Errorf("Got error %e\n", err)
 	}
@@ -139,7 +193,7 @@ func TestLatestReadme(t *testing.T) {
 		t.Errorf("Expected %+v as first readme, got %+v\n", rs[0], first)
 	}
 
-	first, err = LatestReadme([]ReadmeUtgave{})
+	first, err = latestReadme([]ReadmeUtgave{})
 	if first != nil {
 		t.Errorf("Expected no first readme because of empty arr, got %+v\n", first)
 	}
@@ -191,6 +245,11 @@ func TestBadInput(t *testing.T) {
 func p(i int32) *int32 {
 	return &i
 }
+
+// Util function to get title format
+func title(year int, utgave int) string {
+	return fmt.Sprintf("readme utgave nr. %d %d", utgave, year)
+}
 func TestReadmeUtgaver(t *testing.T) {
 	if offline == nil || *offline {
 		t.Skip()
@@ -203,8 +262,8 @@ func TestReadmeUtgaver(t *testing.T) {
 	}
 
 	res := resolver{
-		*client,
-		ctx,
+		client: *client,
+		ctx:    ctx,
 	}
 
 	testCases := []struct {
@@ -217,17 +276,17 @@ func TestReadmeUtgaver(t *testing.T) {
 			name: "First utgave 3",
 			filter: ReadmeUtgaveFilter{
 				Utgave: p(3),
-				Year: p(2017),
+				Year:   p(2017),
 				First:  p(1),
 			},
-			out: []string{"2017-03"},
+			out: []string{title(2017, 3)},
 		},
 		{
 			name: "All from 2017",
 			filter: ReadmeUtgaveFilter{
 				Year: p(2017),
 			},
-			out: []string{"2017-06", "2017-05", "2017-04", "2017-03", "2017-02", "2017-01"},
+			out: []string{title(2017, 6), title(2017, 5), title(2017, 4), title(2017, 3), title(2017, 2), title(2017, 1)},
 		},
 		{
 			name: "Utgave 3 from 2016",
@@ -235,7 +294,7 @@ func TestReadmeUtgaver(t *testing.T) {
 				Year:   p(2016),
 				Utgave: p(3),
 			},
-			out: []string{"2016-03"},
+			out: []string{title(2016, 3)},
 		},
 	}
 	for _, c := range testCases {
