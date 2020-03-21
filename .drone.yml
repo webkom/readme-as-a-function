@@ -11,6 +11,15 @@ steps:
     commands:
       - go get -v ./...
 
+  - name: gofmt
+    image: golang
+    depends_on:
+      - setup
+    when:
+      event: [push]
+    commands:
+      - test -z "$(gofmt -l -d . | tee /dev/stderr)"
+
   - name: test
     image: golang
     depends_on:
@@ -39,6 +48,7 @@ steps:
     depends_on:
       - test
       - build
+      - gofmt
     settings:
       registry: https://registry.abakus.no
       repo: registry.abakus.no/webkom/readme-as-a-function
