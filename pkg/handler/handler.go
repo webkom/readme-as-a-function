@@ -267,5 +267,6 @@ func Handle(req []byte) string {
 func renderError(err error) string {
 	// TODO fix printng
 	// log.Printf("Unexpected error occurred %e\n", err)
-	return fmt.Sprintf(`{"errors":[{"message":"%s"}]}`, err.Error())
+	msg, _ := json.Marshal(err.Error())
+	return fmt.Sprintf(`{"errors":[{"message":%s}]}`, msg)
 }
