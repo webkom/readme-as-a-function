@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
-	"fmt"
 	"google.golang.org/api/option"
 	"reflect"
 	"testing"
@@ -51,11 +50,11 @@ func TestRegex(t *testing.T) {
 			matches: []string{"2019", "03"},
 		},
 		{
-			name:    "2009-01.jpg",
+			name:    "pdf/2009/2009-01.jpg",
 			matches: []string{"2009", "01"},
 		},
 		{
-			name:    "2009-01.pdf",
+			name:    "pdf/2009/2009-01.pdf",
 			matches: []string{"2009", "01"},
 		},
 		{
@@ -246,10 +245,6 @@ func p(i int32) *int32 {
 	return &i
 }
 
-// Util function to get title format
-func title(year int, utgave int) string {
-	return fmt.Sprintf("readme utgave nr. %d %d", utgave, year)
-}
 func TestReadmeUtgaver(t *testing.T) {
 	if offline == nil || *offline {
 		t.Skip()
@@ -279,14 +274,14 @@ func TestReadmeUtgaver(t *testing.T) {
 				Year:   p(2017),
 				First:  p(1),
 			},
-			out: []string{title(2017, 3)},
+			out: []string{"readme utgave nr. 3 2017"},
 		},
 		{
 			name: "All from 2017",
 			filter: ReadmeUtgaveFilter{
 				Year: p(2017),
 			},
-			out: []string{title(2017, 6), title(2017, 5), title(2017, 4), title(2017, 3), title(2017, 2), title(2017, 1)},
+			out: []string{"readme utgave nr. 6 2017", "readme utgave nr. 5 2017", "readme utgave nr. 4 2017", "readme utgave nr. 3 2017", "readme utgave nr. 2 2017", "readme utgave nr. 1 2017"},
 		},
 		{
 			name: "Utgave 3 from 2016",
@@ -294,7 +289,7 @@ func TestReadmeUtgaver(t *testing.T) {
 				Year:   p(2016),
 				Utgave: p(3),
 			},
-			out: []string{title(2016, 3)},
+			out: []string{"readme utgave nr. 3 2016"},
 		},
 	}
 	for _, c := range testCases {

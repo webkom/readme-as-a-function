@@ -103,6 +103,10 @@ func getLink(name string) string {
 	return fmt.Sprintf("https://storage.googleapis.com/%s/%s", bucketName, name)
 }
 
+func getImageLink(year int32, utgave int32) string {
+	return fmt.Sprintf("https://storage.googleapis.com/%s/images/%d/%d-%d.jpg", bucketName, year, year, utgave)
+}
+
 func getRegexMatches(name string) []string {
 	re := regexp.MustCompile(`(?P<Year>\d{4})-(?P<Utgave>\d{2})`)
 
@@ -117,21 +121,17 @@ func getRegexMatches(name string) []string {
 // ex. "2018" fiters for all objects with a path beginning with "2018"
 func getReadmes(ctx context.Context, client storage.Client, query string) ([]ReadmeUtgave, error) {
 	pdfQuery := &storage.Query{Prefix: fmt.Sprintf("pdf/%s", query)}
-	imageQuery := &storage.Query{Prefix: fmt.Sprintf("images/%s", query)}
 
 	bkt := client.Bucket(bucketName)
 	pdfIt := bkt.Objects(ctx, pdfQuery)
-	imageIt := bkt.Objects(ctx, imageQuery)
 	var err error
 	var readmes []ReadmeUtgave
 	for {
-		pdfAttrs, errr := pdfIt.Next()
-		if errr == iterator.Done {
+		pdfAttrs, itErr := pdfIt.Next()
+		if itErr == iterator.Done {
 			break
-		}
-		imageAttrs, errr := imageIt.Next()
-
-		if errr == iterator.Done {
+		} else if itErr != nil {
+			err = itErr
 			break
 		}
 
@@ -141,18 +141,17 @@ func getReadmes(ctx context.Context, client storage.Client, query string) ([]Rea
 			continue
 		}
 
-		year, errr := strconv.ParseInt(matches[0], 10, 32)
-		utgave, errr := strconv.ParseInt(matches[1], 10, 32)
+		year, yearParseErr := strconv.ParseInt(matches[0], 10, 32)
+		utgave, utgaveParseErr := strconv.ParseInt(matches[1], 10, 32)
 		title := fmt.Sprintf("readme utgave nr. %d %d", utgave, year)
 
-		err = errr
-		if err != nil {
-			break
+		if yearParseErr != nil || utgaveParseErr != nil {
+			continue
 		}
 
 		r := ReadmeUtgave{
 			Title:  title,
-			Image:  getLink(imageAttrs.Name),
+			Image:  getImageLink(int32(year), int32(utgave)),
 			Pdf:    getLink(pdfAttrs.Name),
 			Year:   int32(year),
 			Utgave: int32(utgave),
