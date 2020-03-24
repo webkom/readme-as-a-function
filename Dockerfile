@@ -2,7 +2,7 @@ FROM golang:alpine AS build-env
 RUN apk update && apk add git gcc libc-dev curl ca-certificates
 WORKDIR /app
 COPY go.mod go.sum ./
-RUN go get -v
+RUN go mod download -x
 ADD . ./
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
 
