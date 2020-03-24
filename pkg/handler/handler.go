@@ -104,7 +104,7 @@ func getLink(name string) string {
 }
 
 func getImageLink(year int32, utgave int32) string {
-	return fmt.Sprintf("https://storage.googleapis.com/%s/images/%d/%d-%d.jpg", bucketName, year, year, utgave)
+	return fmt.Sprintf("https://storage.googleapis.com/%s/images/%d/%d-%02d.jpg", bucketName, year, year, utgave)
 }
 
 func getRegexMatches(name string) []string {
