@@ -50,8 +50,8 @@ steps:
       - build
       - gofmt
     settings:
-      registry: https://registry.abakus.no
-      repo: registry.abakus.no/webkom/readme-as-a-function
+      registry: https://registry.webkom.dev
+      repo: registry.webkom.dev/webkom/readme-as-a-function
       username:
         from_secret: docker_username
       password:
