@@ -99,8 +99,8 @@ type ReadmeUtgaveFilter struct {
 	First  *int32
 }
 
-func getLink(name string) string {
-	return fmt.Sprintf("https://storage.googleapis.com/%s/%s", bucketName, name)
+func getPdfLink(year int32, utgave int32) string {
+	return fmt.Sprintf("https://readme.abakus.no/edition/%d-%02d.pdf", year, utgave)
 }
 
 func getImageLink(year int32, utgave int32) string {
@@ -152,7 +152,7 @@ func getReadmes(ctx context.Context, client storage.Client, query string) ([]Rea
 		r := ReadmeUtgave{
 			Title:  title,
 			Image:  getImageLink(int32(year), int32(utgave)),
-			Pdf:    getLink(pdfAttrs.Name),
+			Pdf:    getPdfLink(int32(year), int32(utgave)),
 			Year:   int32(year),
 			Utgave: int32(utgave),
 		}
