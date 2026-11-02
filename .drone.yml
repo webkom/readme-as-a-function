@@ -5,14 +5,14 @@ name: default
 
 steps:
   - name: setup
-    image: golang
+    image: golang:1.25
     when:
       event: [push]
     commands:
-      - go get -v ./...
+      - go mod download
 
   - name: gofmt
-    image: golang
+    image: golang:1.25
     depends_on:
       - setup
     when:
@@ -21,16 +21,17 @@ steps:
       - test -z "$(gofmt -l -d . | tee /dev/stderr)"
 
   - name: test
-    image: golang
+    image: golang:1.25
     depends_on:
       - setup
     when:
       event: [push]
     commands:
+      - go vet ./...
       - go test -v ./...
 
   - name: build
-    image: golang
+    image: golang:1.25
     depends_on:
       - setup
     when:

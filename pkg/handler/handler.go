@@ -1,30 +1,30 @@
+// Package handler serves the readme GraphQL API on top of the public readme
+// editions API at https://readme.abakus.no/api/editions.
 package handler
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"regexp"
+	"io"
+	"net/http"
 	"sort"
-	"strconv"
-
-	"cloud.google.com/go/storage"
-	graphql "github.com/graph-gophers/graphql-go"
-	"google.golang.org/api/iterator"
-	"google.golang.org/api/option"
 	"time"
+
+	graphql "github.com/graph-gophers/graphql-go"
 )
 
-const schema = `
+const schemaSDL = `
 schema {
 	query: Query
 }
 type Query {
-	# Get a list of readmes
+	# Get a list of readmes, newest first
 	readmeUtgaver(
 		# Filter by year
 		year: Int
-		# filter by issue number, 1 to 6
+		# Filter by issue number, 1 to 6
 		utgave: Int
 		# Get the first _n_ issues/utgaver
 		first: Int
@@ -34,22 +34,23 @@ type Query {
 }
 type ReadmeUtgave {
 	title: String!
+	# URL of the cover image
 	image: String!
+	# URL of the edition on readme.abakus.no
 	pdf: String!
 	year: Int!
 	utgave: Int!
 }
-
 `
 
-const bucketName = "readme-arkiv.appspot.com"
+const editionsURL = "https://readme.abakus.no/api/editions"
 
-type resolver struct {
-	client storage.Client
-	ctx    context.Context
-}
+const requestTimeout = 8 * time.Second
 
-// ReadmeUtgave is a cool struct
+// maxEditionsResponseBytes caps how much of the upstream response is read.
+const maxEditionsResponseBytes = 10 << 20
+
+// ReadmeUtgave is a single readme edition.
 type ReadmeUtgave struct {
 	Title  string
 	Image  string
@@ -58,166 +59,124 @@ type ReadmeUtgave struct {
 	Utgave int32
 }
 
-// TITLE returns the title of the readme
-func (r ReadmeUtgave) TITLE() string {
-	return r.Title
+// edition is an edition as returned by the readme editions API.
+type edition struct {
+	ID            string `json:"id"`
+	EditionNumber int32  `json:"editionNumber"`
+	EditionYear   int32  `json:"editionYear"`
+	ThumbnailURL  string `json:"thumbnailUrl"`
+	EditionURL    string `json:"editionUrl"`
 }
 
-// PDF returns the complete url of the pdf
-func (r ReadmeUtgave) PDF() string {
-	return r.Pdf
+type editionsResponse struct {
+	Editions []edition `json:"editions"`
 }
 
-// IMAGE returns the complete url of the image
-func (r ReadmeUtgave) IMAGE() string {
-	return r.Image
+type resolver struct {
+	client      *http.Client
+	editionsURL string
 }
 
-// YEAR returns the year
-func (r ReadmeUtgave) YEAR() int32 {
-	return r.Year
-}
-
-// UTGAVE returns the "utgave" nr
-func (r ReadmeUtgave) UTGAVE() int32 {
-	return r.Utgave
-}
-
-func (r *resolver) LatestReadme() (*ReadmeUtgave, error) {
-	readmes, err := getReadmes(r.ctx, r.client, "")
-	sortReadmes(&readmes)
-	if len(readmes) == 0 {
-		return nil, nil
-	}
-	return &readmes[0], err
-}
-
-// ReadmeUtgaveFilter is the filter
-type ReadmeUtgaveFilter struct {
+type readmeUtgaverArgs struct {
 	Year   *int32
 	Utgave *int32
 	First  *int32
 }
 
-func getPdfLink(year int32, utgave int32) string {
-	return fmt.Sprintf("https://readme.abakus.no/edition/%d-%02d.pdf", year, utgave)
-}
-
-func getImageLink(year int32, utgave int32) string {
-	return fmt.Sprintf("https://storage.googleapis.com/%s/images/%d/%d-%02d.jpg", bucketName, year, year, utgave)
-}
-
-func getRegexMatches(name string) []string {
-	re := regexp.MustCompile(`(?P<Year>\d{4})-(?P<Utgave>\d{2})`)
-
-	if !re.MatchString(name) {
-		return nil
+func (r *resolver) ReadmeUtgaver(ctx context.Context, args readmeUtgaverArgs) ([]ReadmeUtgave, error) {
+	if args.First != nil && *args.First < 0 {
+		return nil, errors.New("first must be a non-negative integer")
 	}
-	return re.FindStringSubmatch(name)[1:]
+	readmes, err := fetchReadmes(ctx, r.client, r.editionsURL)
+	if err != nil {
+		return nil, err
+	}
+	readmes = filterReadmes(readmes, args.Year, args.Utgave)
+	if args.First != nil && int(*args.First) < len(readmes) {
+		readmes = readmes[:*args.First]
+	}
+	return readmes, nil
 }
 
-// getReadmes fetches readmes from the storage bucket via a storage.Client.
-// query is optional for filtering objects via object prefix (path).
-// ex. "2018" fiters for all objects with a path beginning with "2018"
-func getReadmes(ctx context.Context, client storage.Client, query string) ([]ReadmeUtgave, error) {
-	pdfQuery := &storage.Query{Prefix: fmt.Sprintf("pdf/%s", query)}
+func (r *resolver) LatestReadme(ctx context.Context) (*ReadmeUtgave, error) {
+	readmes, err := fetchReadmes(ctx, r.client, r.editionsURL)
+	if err != nil || len(readmes) == 0 {
+		return nil, err
+	}
+	return &readmes[0], nil
+}
 
-	bkt := client.Bucket(bucketName)
-	pdfIt := bkt.Objects(ctx, pdfQuery)
-	var err error
-	var readmes []ReadmeUtgave
-	for {
-		pdfAttrs, itErr := pdfIt.Next()
-		if itErr == iterator.Done {
-			break
-		} else if itErr != nil {
-			err = itErr
-			break
-		}
+// fetchReadmes fetches every edition from the editions API, newest first.
+func fetchReadmes(ctx context.Context, client *http.Client, url string) ([]ReadmeUtgave, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("fetching readme editions: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "readme-as-a-function (+https://github.com/webkom/readme-as-a-function)")
 
-		// Object may be a directory
-		matches := getRegexMatches(pdfAttrs.Name)
-		if matches == nil {
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetching readme editions: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetching readme editions: unexpected status %s", res.Status)
+	}
+
+	var body editionsResponse
+	if err := json.NewDecoder(io.LimitReader(res.Body, maxEditionsResponseBytes)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("decoding readme editions: %w", err)
+	}
+	if body.Editions == nil {
+		return nil, errors.New("decoding readme editions: response has no editions")
+	}
+
+	readmes := make([]ReadmeUtgave, 0, len(body.Editions))
+	for _, e := range body.Editions {
+		// An edition without a year, number or page cannot be shown or linked to
+		if e.EditionYear == 0 || e.EditionNumber == 0 || e.EditionURL == "" {
 			continue
 		}
-
-		year, yearParseErr := strconv.ParseInt(matches[0], 10, 32)
-		utgave, utgaveParseErr := strconv.ParseInt(matches[1], 10, 32)
-		title := fmt.Sprintf("readme utgave nr. %d %d", utgave, year)
-
-		if yearParseErr != nil || utgaveParseErr != nil {
-			continue
-		}
-
-		r := ReadmeUtgave{
-			Title:  title,
-			Image:  getImageLink(int32(year), int32(utgave)),
-			Pdf:    getPdfLink(int32(year), int32(utgave)),
-			Year:   int32(year),
-			Utgave: int32(utgave),
-		}
-		readmes = append(readmes, r)
+		readmes = append(readmes, ReadmeUtgave{
+			Title:  fmt.Sprintf("readme utgave nr. %d %d", e.EditionNumber, e.EditionYear),
+			Image:  e.ThumbnailURL,
+			Pdf:    e.EditionURL,
+			Year:   e.EditionYear,
+			Utgave: e.EditionNumber,
+		})
 	}
-	return readmes, err
+	sortReadmes(readmes)
+	return readmes, nil
 }
 
-func (r *resolver) ReadmeUtgaver(filter *ReadmeUtgaveFilter) ([]ReadmeUtgave, error) {
-	if filter == nil {
-		readmes, err := getReadmes(r.ctx, r.client, "")
-		sortReadmes(&readmes)
-		return readmes, err
-	}
-	var query string
-	var readmes []ReadmeUtgave
-	var err error
-	if filter.Year != nil {
-		query = fmt.Sprintf("%d/", *filter.Year)
-		readmes, err = getReadmes(r.ctx, r.client, query)
-	} else {
-		readmes, err = getReadmes(r.ctx, r.client, "")
-	}
-	if filter.Utgave != nil {
-		readmes = filterReadmes(readmes, filter)
-	}
-	sortReadmes(&readmes)
-	if filter.First != nil && *filter.First < int32(len(readmes)) {
-		return readmes[:*filter.First], err
-	}
-
-	return readmes, err
-}
-
-func sortReadmes(utgaver *[]ReadmeUtgave) {
-	sort.Slice(*utgaver, func(i, j int) bool {
-		if (*utgaver)[i].Year == (*utgaver)[j].Year {
-			return (*utgaver)[i].Utgave > (*utgaver)[j].Utgave
+// sortReadmes sorts readmes newest first.
+func sortReadmes(readmes []ReadmeUtgave) {
+	sort.SliceStable(readmes, func(i, j int) bool {
+		if readmes[i].Year == readmes[j].Year {
+			return readmes[i].Utgave > readmes[j].Utgave
 		}
-		return (*utgaver)[i].Year > (*utgaver)[j].Year
+		return readmes[i].Year > readmes[j].Year
 	})
 }
 
-func filterReadmes(utgaver []ReadmeUtgave, filter *ReadmeUtgaveFilter) []ReadmeUtgave {
-	var res []ReadmeUtgave
-	for _, utgave := range utgaver {
-		if filter.Utgave != nil && *filter.Utgave != utgave.Utgave {
+// filterReadmes keeps the readmes matching the given year and utgave. A nil
+// filter matches everything.
+func filterReadmes(readmes []ReadmeUtgave, year *int32, utgave *int32) []ReadmeUtgave {
+	res := make([]ReadmeUtgave, 0, len(readmes))
+	for _, r := range readmes {
+		if year != nil && *year != r.Year {
 			continue
 		}
-		if filter.Year != nil && *filter.Year != utgave.Year {
+		if utgave != nil && *utgave != r.Utgave {
 			continue
 		}
-
-		res = append(res, utgave)
+		res = append(res, r)
 	}
 	return res
 }
 
-var params struct {
-	Query         string                 `json:"query"`
-	OperationName string                 `json:"operationName"`
-	Variables     map[string]interface{} `json:"variables"`
-}
-
-var graphiql = `
+const graphiql = `
 <!DOCTYPE html>
 <html>
 	<head>
@@ -255,52 +214,44 @@ var graphiql = `
 </html>
 `
 
-const cancelTimeout = 8 * time.Second
-
-// Handle a serverless request
+// Handle a serverless request. An empty request (GET) returns GraphiQL, any
+// other request is executed as a GraphQL query.
 func Handle(req []byte) string {
+	return handle(req, &resolver{client: http.DefaultClient, editionsURL: editionsURL})
+}
+
+func handle(req []byte, r *resolver) string {
+	if len(req) == 0 {
+		return graphiql
+	}
+
 	var params struct {
 		Query         string                 `json:"query"`
 		OperationName string                 `json:"operationName"`
 		Variables     map[string]interface{} `json:"variables"`
 	}
-
-	// If the request is empty / GET
-	if len(req) == 0 {
-		return graphiql
-	}
-
-	var err error
-	err = json.Unmarshal(req, &params)
-	if err != nil {
+	if err := json.Unmarshal(req, &params); err != nil {
 		return renderError(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), cancelTimeout)
-
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 
-	client, err := storage.NewClient(ctx, option.WithoutAuthentication())
+	schema := graphql.MustParseSchema(schemaSDL, r, graphql.UseFieldResolvers())
+	response := schema.Exec(ctx, params.Query, params.OperationName, params.Variables)
+	responseJSON, err := json.Marshal(response)
 	if err != nil {
-		renderError(err)
+		return renderError(err)
 	}
-
-	r := resolver{
-		client: *client,
-		ctx:    ctx,
-	}
-
-	s := graphql.MustParseSchema(schema, &r)
-	response := s.Exec(ctx, params.Query, params.OperationName, params.Variables)
-	responseJSON, _ := json.Marshal(response)
-
 	return string(responseJSON)
-
 }
 
 func renderError(err error) string {
-	// TODO fix printng
-	// log.Printf("Unexpected error occurred %e\n", err)
-	msg, _ := json.Marshal(err.Error())
-	return fmt.Sprintf(`{"errors":[{"message":%s}]}`, msg)
+	type message struct {
+		Message string `json:"message"`
+	}
+	res, _ := json.Marshal(struct {
+		Errors []message `json:"errors"`
+	}{Errors: []message{{Message: err.Error()}}})
+	return string(res)
 }

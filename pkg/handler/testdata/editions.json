@@ -1,0 +1,46 @@
+{
+  "editions": [
+    {
+      "id": "2025-06",
+      "editionNumber": 6,
+      "editionYear": 2025,
+      "thumbnailUrl": "https://firebasestorage.googleapis.com/v0/b/readme-arkiv.appspot.com/o/images%2F2025%2F2025-06.jpg?alt=media",
+      "editionUrl": "https://readme.abakus.no/edition/2025-06"
+    },
+    {
+      "id": "2026-01",
+      "editionNumber": 1,
+      "editionYear": 2026,
+      "thumbnailUrl": "https://firebasestorage.googleapis.com/v0/b/readme-arkiv.appspot.com/o/images%2F2026%2F2026-01.jpg?alt=media",
+      "editionUrl": "https://readme.abakus.no/edition/2026-01"
+    },
+    {
+      "id": "2026-02",
+      "editionNumber": 2,
+      "editionYear": 2026,
+      "thumbnailUrl": "https://firebasestorage.googleapis.com/v0/b/readme-arkiv.appspot.com/o/images%2F2026%2F2026-02.jpg?alt=media",
+      "editionUrl": "https://readme.abakus.no/edition/2026-02"
+    },
+    {
+      "id": "2025-01",
+      "editionNumber": 1,
+      "editionYear": 2025,
+      "thumbnailUrl": "https://firebasestorage.googleapis.com/v0/b/readme-arkiv.appspot.com/o/images%2F2025%2F2025-01.jpg?alt=media",
+      "editionUrl": "https://readme.abakus.no/edition/2025-01"
+    },
+    {
+      "id": "1999-01",
+      "editionNumber": 1,
+      "editionYear": 1999,
+      "thumbnailUrl": "https://firebasestorage.googleapis.com/v0/b/readme-arkiv.appspot.com/o/images%2F1999%2F1999-01.jpg?alt=media",
+      "editionUrl": "https://readme.abakus.no/edition/1999-01"
+    },
+    {
+      "id": "broken",
+      "editionNumber": 0,
+      "editionYear": 0,
+      "thumbnailUrl": "",
+      "editionUrl": ""
+    }
+  ]
+}

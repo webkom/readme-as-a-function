@@ -1,12 +1,12 @@
 package main
 
 import (
-	"fmt"
-	readmeHandler "github.com/webkom/readme-as-a-function/pkg/handler"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"os"
+
+	readmeHandler "github.com/webkom/readme-as-a-function/pkg/handler"
 )
 
 func main() {
@@ -17,8 +17,12 @@ func main() {
 		defer func() {
 			logger.Println(r.Method, r.URL.Path, r.RemoteAddr, r.UserAgent())
 		}()
-		input, _ := ioutil.ReadAll(r.Body)
-		fmt.Fprintf(w, readmeHandler.Handle(input))
+		input, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		_, _ = io.WriteString(w, readmeHandler.Handle(input))
 	})
-	http.ListenAndServe(":8000", nil)
+	logger.Fatal(http.ListenAndServe(":8000", nil))
 }

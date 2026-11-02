@@ -4,42 +4,28 @@
 
 Graphql api as a function, runs in [openfaas](https://www.openfaas.com/).
 
-Allows you to fetch the `n` last readmes. Also possible to filter based on year and issue number.
+Allows you to fetch the `n` last readmes.
+Also possible to filter based on year and issue number.
 
-## Storage format
+Running on https://readme-as-a-function.abakus.no, used by the readme cards on the [abakus.no](https://abakus.no) frontpage.
 
-The readmes are stored in a bucket in the following format:
+## Data source
 
-```sh
-# The bucket has two top-level directories:
-/images/
-# and
-/pdf/
+All editions come from the public readme API at https://readme.abakus.no/api/editions.
+Every request fetches the full list of editions and filters it in memory, so new editions show up as soon as they are published on readme.abakus.no.
 
-# Both these folders follow the schema <year>/<year>-<edition>.<ext>
-# So we have the following folders:
-/pdf/1994/
-/pdf/1995/
-#...
-/pdf/2020/
-# The same goes for images
-/images/2020/
+Each edition is mapped like this:
 
-# In all the year folders, the pdfs and images are stored:
-/pdf/1994/1994-01.pdf
-/pdf/1994/1994-02.pdf
-# ...and so on
-# Again images must follow the same schema
-/images/1994/1994-01.jpg
-```
+| GraphQL field | Editions API field | Example                                                         |
+| ------------- | ------------------ | --------------------------------------------------------------- |
+| `title`       | -                  | `readme utgave nr. 4 2026`                                      |
+| `image`       | `thumbnailUrl`     | Cover image of the edition                                      |
+| `pdf`         | `editionUrl`       | `https://readme.abakus.no/edition/2026-04`                      |
+| `year`        | `editionYear`      | `2026`                                                          |
+| `utgave`      | `editionNumber`    | `4`                                                             |
 
-> If the bucket does not follow this schema, the api will not give the correct results!
-
-Note also that we do not check the file extension. It's assumed that all files in `/pdf/` are .pdf.
-The api creates a link based on the file, so any files will resolve.
-For images, any valid file format works, so jpg, png, gif, whatever.
-
-Running on https://readme-as-a-function.abakus.no
+The `pdf` field links to the edition page on readme.abakus.no.
+It keeps its name so existing clients keep working.
 
 ## To run locally
 
@@ -48,7 +34,6 @@ $ # Simple usage
 $ go run main.go <<<  '{"query":"{latestReadme{ title }}"}' | jq
 $ # As webserver at http://localhost:8000
 $ go run pkg/webserver/main.go
-
 ```
 
 ### API schema
@@ -58,11 +43,11 @@ schema {
   query: Query
 }
 type Query {
-  # Get a list of readmes
+  # Get a list of readmes, newest first
   readmeUtgaver(
     # Filter by year
     year: Int
-    # filter by issue number, 1 to 6
+    # Filter by issue number, 1 to 6
     utgave: Int
     # Get the first _n_ issues/utgaver
     first: Int
@@ -72,7 +57,9 @@ type Query {
 }
 type ReadmeUtgave {
   title: String!
+  # URL of the cover image
   image: String!
+  # URL of the edition on readme.abakus.no
   pdf: String!
   year: Int!
   utgave: Int!
@@ -83,4 +70,6 @@ type ReadmeUtgave {
 
 ```bash
 $ go test -v ./...
+$ # Skip the test against the live editions API
+$ go test -v ./... -offline
 ```
