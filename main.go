@@ -2,14 +2,15 @@ package main
 
 import (
 	"fmt"
-	"github.com/webkom/readme-as-a-function/pkg/handler"
-	"io/ioutil"
+	"io"
 	"log"
 	"os"
+
+	"github.com/webkom/readme-as-a-function/pkg/handler"
 )
 
 func main() {
-	input, err := ioutil.ReadAll(os.Stdin)
+	input, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		log.Fatalf("Unable to read standard input: %s", err.Error())
 	}
