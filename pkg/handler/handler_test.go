@@ -1,205 +1,248 @@
 package handler
 
 import (
-	"cloud.google.com/go/storage"
-	"context"
 	"encoding/json"
-	"errors"
 	"flag"
-	"google.golang.org/api/option"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
 var offline = flag.Bool("offline", false, "Offline test - does not fetch remote data")
 
-func TestRealData(t *testing.T) {
-	if offline == nil || *offline {
-		t.Skip()
-	}
-	input := `{"query":"{readmeUtgaver{utgave title year image pdf}}","variables":null,"operationName":null}`
-	res := Handle([]byte(input))
-	var result struct {
-		Data  map[string]interface{} `json:"data"`
-		Error map[string]interface{} `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(res), &params); err != nil {
-		t.Errorf("Error while executing function %e", err)
+type graphqlResponse struct {
+	Data struct {
+		ReadmeUtgaver []ReadmeUtgave `json:"readmeUtgaver"`
+		LatestReadme  *ReadmeUtgave  `json:"latestReadme"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
 
+// newEditionsServer serves body with the given status as a fake editions API.
+func newEditionsServer(t *testing.T, status int, body string) *resolver {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("Expected GET request to the editions API, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	return &resolver{client: server.Client(), editionsURL: server.URL}
+}
+
+func fixtureResolver(t *testing.T) *resolver {
+	t.Helper()
+	body, err := os.ReadFile("testdata/editions.json")
+	if err != nil {
+		t.Fatalf("Unable to read fixture: %s", err)
 	}
-	if len(result.Error) != 0 {
-		t.Errorf("Got the following errors while fetching %+v", result.Error)
+	return newEditionsServer(t, http.StatusOK, string(body))
+}
+
+func query(t *testing.T, r *resolver, q string) graphqlResponse {
+	t.Helper()
+	req, err := json.Marshal(map[string]string{"query": q})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := handle(req, r)
+	var res graphqlResponse
+	if err := json.Unmarshal([]byte(raw), &res); err != nil {
+		t.Fatalf("Unable to parse response %s: %s", raw, err)
+	}
+	return res
+}
+
+func titles(readmes []ReadmeUtgave) []string {
+	res := []string{}
+	for _, r := range readmes {
+		res = append(res, r.Title)
+	}
+	return res
+}
+
+func TestFieldMapping(t *testing.T) {
+	res := query(t, fixtureResolver(t), `{readmeUtgaver(first: 1){title image pdf year utgave}}`)
+	if len(res.Errors) != 0 {
+		t.Fatalf("Expected no errors, got %+v", res.Errors)
+	}
+	expected := []ReadmeUtgave{{
+		Title:  "readme utgave nr. 2 2026",
+		Image:  "https://firebasestorage.googleapis.com/v0/b/readme-arkiv.appspot.com/o/images%2F2026%2F2026-02.jpg?alt=media",
+		Pdf:    "https://readme.abakus.no/edition/2026-02",
+		Year:   2026,
+		Utgave: 2,
+	}}
+	if !reflect.DeepEqual(res.Data.ReadmeUtgaver, expected) {
+		t.Errorf("Expected %+v, got %+v", expected, res.Data.ReadmeUtgaver)
 	}
 }
 
-type StubErrorReader struct{}
-
-var ErrStubReader = errors.New("Wrong")
-
-func (StubErrorReader) Read(p []byte) (n int, err error) {
-	return 0, ErrStubReader
-}
-
-func TestRegex(t *testing.T) {
+func TestReadmeUtgaver(t *testing.T) {
 	testCases := []struct {
-		name    string
-		matches []string
+		name  string
+		query string
+		out   []string
 	}{
 		{
-			name:    "2019-03.pdf",
-			matches: []string{"2019", "03"},
+			name:  "All, newest first, skipping invalid editions",
+			query: `{readmeUtgaver{title}}`,
+			out: []string{
+				"readme utgave nr. 2 2026",
+				"readme utgave nr. 1 2026",
+				"readme utgave nr. 6 2025",
+				"readme utgave nr. 1 2025",
+				"readme utgave nr. 1 1999",
+			},
 		},
 		{
-			name:    "pdf/2009/2009-01.jpg",
-			matches: []string{"2009", "01"},
+			name:  "First 2",
+			query: `{readmeUtgaver(first: 2){title}}`,
+			out:   []string{"readme utgave nr. 2 2026", "readme utgave nr. 1 2026"},
 		},
 		{
-			name:    "pdf/2009/2009-01.pdf",
-			matches: []string{"2009", "01"},
+			name:  "First 0",
+			query: `{readmeUtgaver(first: 0){title}}`,
+			out:   []string{},
 		},
 		{
-			name:    "2020-01.pdf",
-			matches: []string{"2020", "01"},
+			name:  "First more than available",
+			query: `{readmeUtgaver(first: 100){title}}`,
+			out: []string{
+				"readme utgave nr. 2 2026",
+				"readme utgave nr. 1 2026",
+				"readme utgave nr. 6 2025",
+				"readme utgave nr. 1 2025",
+				"readme utgave nr. 1 1999",
+			},
 		},
 		{
-			name:    "1993-02.pdf",
-			matches: []string{"1993", "02"},
+			name:  "All from 2025",
+			query: `{readmeUtgaver(year: 2025){title}}`,
+			out:   []string{"readme utgave nr. 6 2025", "readme utgave nr. 1 2025"},
 		},
 		{
-			name:    "utgave-1993-02.pdf",
-			matches: []string{"1993", "02"},
+			name:  "Utgave 1 from every year",
+			query: `{readmeUtgaver(utgave: 1){title}}`,
+			out:   []string{"readme utgave nr. 1 2026", "readme utgave nr. 1 2025", "readme utgave nr. 1 1999"},
 		},
 		{
-			name:    "2019-1.pdf",
-			matches: nil,
+			name:  "First utgave 1",
+			query: `{readmeUtgaver(utgave: 1, first: 1){title}}`,
+			out:   []string{"readme utgave nr. 1 2026"},
 		},
 		{
-			name:    "02-2019.pdf",
-			matches: nil,
+			name:  "Utgave 6 from 2025",
+			query: `{readmeUtgaver(year: 2025, utgave: 6){title}}`,
+			out:   []string{"readme utgave nr. 6 2025"},
 		},
 		{
-			name:    "2019_03.txt",
-			matches: nil,
+			name:  "Year without editions",
+			query: `{readmeUtgaver(year: 2000){title}}`,
+			out:   []string{},
 		},
 	}
-
+	r := fixtureResolver(t)
 	for _, c := range testCases {
 		t.Run(c.name, func(t *testing.T) {
-			res := getRegexMatches(c.name)
-			if !reflect.DeepEqual(res, c.matches) {
-				t.Errorf("Expected %s, got %s\n", c.matches, res)
+			res := query(t, r, c.query)
+			if len(res.Errors) != 0 {
+				t.Fatalf("Expected no errors, got %+v", res.Errors)
+			}
+			if got := titles(res.Data.ReadmeUtgaver); !reflect.DeepEqual(got, c.out) {
+				t.Errorf("Expected %+v, got %+v", c.out, got)
 			}
 		})
 	}
-
 }
 
-func TestGetReadmes(t *testing.T) {
-	if offline == nil || *offline {
-		t.Skip()
+func TestReadmeUtgaverNegativeFirst(t *testing.T) {
+	res := query(t, fixtureResolver(t), `{readmeUtgaver(first: -1){title}}`)
+	if len(res.Errors) != 1 || res.Errors[0].Message != "first must be a non-negative integer" {
+		t.Errorf("Expected a single error about first, got %+v", res.Errors)
 	}
-	ctx := context.Background()
-	client, err := storage.NewClient(ctx, option.WithoutAuthentication())
-	if err != nil {
-		t.Errorf("Error while creating storage client: %+v", err.Error())
-	}
-
-	readmes, err := getReadmes(ctx, *client, "2019")
-
-	if err != nil {
-		t.Errorf("Expected no errors but got: %s", err.Error())
-	}
-
-	if len(readmes) != 6 {
-		t.Errorf("Expected exactly 6 readmes, but got %v", len(readmes))
-	}
-}
-
-func TestReadmeUtgaveResolvers(t *testing.T) {
-	r := ReadmeUtgave{
-		Title:  "title",
-		Year:   2018,
-		Utgave: 2,
-		Image:  "test.png",
-		Pdf:    "2.pdf",
-	}
-	if res := r.YEAR(); res != r.Year {
-		t.Errorf("Expected year %d, got %d", res, r.Year)
-	}
-	if res := r.TITLE(); res != r.Title {
-		t.Errorf("Expected Title %s, got %s", res, r.Title)
-	}
-	if res := r.UTGAVE(); res != r.Utgave {
-		t.Errorf("Expected utgave %d, got %d", res, r.Utgave)
-	}
-	if res := r.IMAGE(); res != "test.png" {
-		t.Errorf("Expected image %s, got %s", res, r.Image)
-	}
-	if res := r.PDF(); res != "2.pdf" {
-		t.Errorf("Expected pdf %s, got %s", res, r.Pdf)
-	}
-}
-
-func TestLatestReadmeOnline(t *testing.T) {
-	if offline == nil || *offline {
-		t.Skip()
-	}
-
-	ctx := context.Background()
-	client, err := storage.NewClient(ctx, option.WithoutAuthentication())
-	if err != nil {
-		t.Errorf("Error while creating storage client: %+v", err.Error())
-	}
-
-	r := resolver{
-		client: *client,
-		ctx:    ctx,
-	}
-
-	first, err := r.LatestReadme()
-	if err != nil {
-		t.Errorf("Got error %e\n", err)
-	}
-	if first == nil {
-		t.Error("Expected to get a first readme, but got nil.")
-	}
-}
-
-// LatestReadme is a utility function to test without google cloud apis.
-func latestReadme(readmes []ReadmeUtgave) (*ReadmeUtgave, error) {
-	sortReadmes(&readmes)
-	if len(readmes) == 0 {
-		return nil, nil
-	}
-	return &readmes[0], nil
 }
 
 func TestLatestReadme(t *testing.T) {
-	rs := []ReadmeUtgave{
+	res := query(t, fixtureResolver(t), `{latestReadme{title}}`)
+	if len(res.Errors) != 0 {
+		t.Fatalf("Expected no errors, got %+v", res.Errors)
+	}
+	if res.Data.LatestReadme == nil || res.Data.LatestReadme.Title != "readme utgave nr. 2 2026" {
+		t.Errorf("Expected readme utgave nr. 2 2026 as latest readme, got %+v", res.Data.LatestReadme)
+	}
+}
+
+func TestLatestReadmeWithoutEditions(t *testing.T) {
+	res := query(t, newEditionsServer(t, http.StatusOK, `{"editions":[]}`), `{latestReadme{title}}`)
+	if len(res.Errors) != 0 {
+		t.Fatalf("Expected no errors, got %+v", res.Errors)
+	}
+	if res.Data.LatestReadme != nil {
+		t.Errorf("Expected no latest readme, got %+v", res.Data.LatestReadme)
+	}
+}
+
+func TestUpstreamErrors(t *testing.T) {
+	testCases := []struct {
+		name   string
+		status int
+		body   string
+		err    string
+	}{
 		{
-			Title: "One",
+			name:   "Server error",
+			status: http.StatusInternalServerError,
+			body:   `{}`,
+			err:    "fetching readme editions: unexpected status 500 Internal Server Error",
 		},
 		{
-			Title: "Two",
+			name:   "Invalid JSON",
+			status: http.StatusOK,
+			body:   `<html></html>`,
+			err:    "decoding readme editions: invalid character '<' looking for beginning of value",
+		},
+		{
+			name:   "Missing editions",
+			status: http.StatusOK,
+			body:   `{"items":[]}`,
+			err:    "decoding readme editions: response has no editions",
 		},
 	}
+	for _, c := range testCases {
+		t.Run(c.name, func(t *testing.T) {
+			r := newEditionsServer(t, c.status, c.body)
+			for _, q := range []string{`{readmeUtgaver{title}}`, `{latestReadme{title}}`} {
+				res := query(t, r, q)
+				if len(res.Errors) != 1 || res.Errors[0].Message != c.err {
+					t.Errorf("%s: expected error %q, got %+v", q, c.err, res.Errors)
+				}
+				if len(res.Data.ReadmeUtgaver) != 0 || res.Data.LatestReadme != nil {
+					t.Errorf("%s: expected no data, got %+v", q, res.Data)
+				}
+			}
+		})
+	}
+}
 
-	first, err := latestReadme(rs)
-	if err != nil {
-		t.Errorf("Got error %e\n", err)
-	}
-	if first == nil || first.Title != "One" {
-		t.Errorf("Expected %+v as first readme, got %+v\n", rs[0], first)
-	}
+func TestUnreachableUpstream(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	r := &resolver{client: server.Client(), editionsURL: server.URL}
+	server.Close()
 
-	first, err = latestReadme([]ReadmeUtgave{})
-	if first != nil {
-		t.Errorf("Expected no first readme because of empty arr, got %+v\n", first)
+	res := query(t, r, `{readmeUtgaver{title}}`)
+	if len(res.Errors) != 1 || !strings.HasPrefix(res.Errors[0].Message, "fetching readme editions: ") {
+		t.Errorf("Expected a single fetch error, got %+v", res.Errors)
 	}
-	if err != nil {
-		t.Errorf("Expected no error %e, got \n", err)
-	}
-
 }
 
 func TestBadInput(t *testing.T) {
@@ -214,14 +257,19 @@ func TestBadInput(t *testing.T) {
 			out:  graphiql,
 		},
 		{
+			name: "Invalid JSON body",
+			in:   `{"query": `,
+			out:  `{"errors":[{"message":"unexpected end of JSON input"}]}`,
+		},
+		{
 			name: "Invalid syntax inside query",
 			in:   `{"query": "{latestReadme{{}}}"}`,
 			out:  `{"errors":[{"message":"syntax error: unexpected \"{\", expecting Ident","locations":[{"line":1,"column":15}]}]}`,
 		},
 		{
-			name: "valid but empty json, no results",
+			name: "Empty selection set",
 			in:   `{"query": "{}"}`,
-			out:  `{"data":{}}`,
+			out:  `{"errors":[{"message":"syntax error: unexpected \"}\", expecting Ident","locations":[{"line":1,"column":2}]}]}`,
 		},
 		{
 			name: "missing query operation",
@@ -229,84 +277,41 @@ func TestBadInput(t *testing.T) {
 			out:  `{"errors":[{"message":"no operations in query document"}]}`,
 		},
 	}
+	r := fixtureResolver(t)
 	for _, c := range testCases {
 		t.Run(c.name, func(t *testing.T) {
-			res := Handle([]byte(c.in))
-			if res != c.out {
-				t.Errorf("Expected %s, got %s\n", c.out, res)
+			if res := handle([]byte(c.in), r); res != c.out {
+				t.Errorf("Expected %s, got %s", c.out, res)
 			}
 		})
 	}
-
 }
 
-// Util function to convert value to ptr for value
-func p(i int32) *int32 {
-	return &i
-}
-
-func TestReadmeUtgaver(t *testing.T) {
-	if offline == nil || *offline {
-		t.Skip()
+// TestLiveEditionsAPI checks that the real editions API still matches what
+// this function expects.
+func TestLiveEditionsAPI(t *testing.T) {
+	if *offline {
+		t.Skip("Skipping test against the live editions API")
 	}
-
-	ctx := context.Background()
-	client, err := storage.NewClient(ctx, option.WithoutAuthentication())
-	if err != nil {
-		t.Errorf("Error while creating storage client: %+v", err.Error())
+	res := query(t, &resolver{client: http.DefaultClient, editionsURL: editionsURL}, `{readmeUtgaver{title image pdf year utgave}}`)
+	if len(res.Errors) != 0 {
+		t.Fatalf("Expected no errors, got %+v", res.Errors)
 	}
-
-	res := resolver{
-		client: *client,
-		ctx:    ctx,
+	// readme has been published since 1999, with up to six editions a year
+	if len(res.Data.ReadmeUtgaver) < 100 {
+		t.Fatalf("Expected at least 100 readmes, got %d", len(res.Data.ReadmeUtgaver))
 	}
-
-	testCases := []struct {
-		name   string
-		filter ReadmeUtgaveFilter
-		out    []string
-		err    error
-	}{
-		{
-			name: "First utgave 3",
-			filter: ReadmeUtgaveFilter{
-				Utgave: p(3),
-				Year:   p(2017),
-				First:  p(1),
-			},
-			out: []string{"readme utgave nr. 3 2017"},
-		},
-		{
-			name: "All from 2017",
-			filter: ReadmeUtgaveFilter{
-				Year: p(2017),
-			},
-			out: []string{"readme utgave nr. 6 2017", "readme utgave nr. 5 2017", "readme utgave nr. 4 2017", "readme utgave nr. 3 2017", "readme utgave nr. 2 2017", "readme utgave nr. 1 2017"},
-		},
-		{
-			name: "Utgave 3 from 2016",
-			filter: ReadmeUtgaveFilter{
-				Year:   p(2016),
-				Utgave: p(3),
-			},
-			out: []string{"readme utgave nr. 3 2016"},
-		},
-	}
-	for _, c := range testCases {
-		t.Run(c.name, func(t *testing.T) {
-			utgaver, err := res.ReadmeUtgaver(&c.filter)
-
-			var utgaverTitles []string
-
-			for _, utg := range utgaver {
-				utgaverTitles = append(utgaverTitles, utg.Title)
-			}
-			if !reflect.DeepEqual(utgaverTitles, c.out) {
-				t.Errorf("Expected %d elements, got %d elements;\n expected %+v, got %+v\n", len(c.out), len(utgaver), c.out, utgaverTitles)
-			}
-			if err != nil && c.err == nil || err != nil && err.Error() != c.err.Error() {
-				t.Errorf("Expected error %e elements, got %e\n", c.err, err)
-			}
-		})
+	for _, r := range res.Data.ReadmeUtgaver {
+		if r.Year < 1999 || r.Utgave < 1 || r.Utgave > 6 {
+			t.Errorf("Unexpected year or utgave in %+v", r)
+		}
+		image, err := url.Parse(r.Image)
+		if err != nil || image.Scheme != "https" || image.Host == "" {
+			t.Errorf("Expected an absolute https image URL in %+v", r)
+		}
+		pdf, err := url.Parse(r.Pdf)
+		if err != nil || pdf.Scheme != "https" || pdf.Host != "readme.abakus.no" {
+			t.Errorf("Expected a readme.abakus.no edition URL in %+v", r)
+		}
 	}
 }
